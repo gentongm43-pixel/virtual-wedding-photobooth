@@ -1,0 +1,62 @@
+import { NextResponse } from "next/server";
+import sharp from "sharp";
+import { prisma } from "@/lib/prisma";
+import { processPhoto } from "@/lib/image/process-photo";
+import { configFromTemplateRecord } from "@/lib/image/template-config";
+import { storage } from "@/lib/storage/storage";
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+function contentTypeFor(buffer: Buffer) {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
+  if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  return null;
+}
+
+export async function POST(request: Request, { params }: { params: Promise<{ eventId: string }> }) {
+  const { eventId } = await params;
+  const form = await request.formData();
+  const file = form.get("file");
+  const sessionId = form.get("sessionId");
+  const templateId = form.get("templateId");
+  if (!(file instanceof File) || typeof sessionId !== "string") return NextResponse.json({ error: "File dan session wajib diisi." }, { status: 400 });
+  if (file.size > MAX_FILE_SIZE) return NextResponse.json({ error: "Ukuran foto maksimal 10 MB." }, { status: 413 });
+  if (!allowedTypes.has(file.type)) return NextResponse.json({ error: "Format foto harus JPEG, PNG, atau WebP." }, { status: 415 });
+  const event = await prisma.event.findFirst({ where: { OR: [{ id: eventId }, { slug: eventId }], active: true }, include: { template: true } });
+  const session = await prisma.guestSession.findUnique({ where: { id: sessionId } });
+  if (!event || !session || session.eventId !== event.id || session.status !== "ACTIVE") return NextResponse.json({ error: "Sesi foto tidak valid." }, { status: 403 });
+  const photoCount = await prisma.photo.count({ where: { sessionId, eventId: event.id } });
+  if (photoCount >= event.photoLimit) return NextResponse.json({ error: "Batas foto untuk sesi ini sudah tercapai." }, { status: 429 });
+  const input = Buffer.from(await file.arrayBuffer());
+  if (contentTypeFor(input) !== file.type) return NextResponse.json({ error: "Isi file bukan gambar yang valid." }, { status: 415 });
+  let originalKey: string | null = null;
+  let finalKey: string | null = null;
+  try {
+    const template = typeof templateId === "string" && templateId
+      ? await prisma.template.findUnique({ where: { id: templateId } })
+      : event.template;
+    if (typeof templateId === "string" && templateId && !template) {
+      return NextResponse.json({ error: "Template foto tidak valid." }, { status: 400 });
+    }
+    const metadata = await sharp(input).metadata();
+    if (!metadata.width || !metadata.height) throw new Error("Invalid image dimensions.");
+    const original = await sharp(input).rotate().jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+    originalKey = event.saveOriginal ? await storage.uploadFile({ data: original, contentType: "image/jpeg", extension: "jpg" }) : null;
+    const final = await processPhoto({
+      original,
+      template:       template ? configFromTemplateRecord(template) : {},
+      photoIndex: photoCount,
+      variables: { eventName: event.name, eventDate: event.date.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" }), location: event.location ?? "" },
+    });
+    finalKey = await storage.uploadFile({ data: final, contentType: "image/jpeg", extension: "jpg" });
+    const photo = await prisma.photo.create({ data: { eventId: event.id, sessionId, originalUrl: originalKey, finalUrl: finalKey } });
+    return NextResponse.json({ id: photo.id, originalUrl: originalKey ? storage.getFileUrl(originalKey) : null, finalUrl: storage.getFileUrl(finalKey) }, { status: 201 });
+  } catch (error) {
+    if (originalKey) await storage.deleteFile(originalKey);
+    if (finalKey) await storage.deleteFile(finalKey);
+    if (process.env.NODE_ENV === "development") console.error(error);
+    return NextResponse.json({ error: "Foto gagal diproses. Silakan coba lagi." }, { status: 500 });
+  }
+}

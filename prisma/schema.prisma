@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  sessions     AdminSession[]
+}
+
+model AdminSession {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Template {
+  id          String   @id @default(cuid())
+  name        String
+  width       Int      @default(1080)
+  height      Int      @default(1350)
+  background  String?
+  overlay     String?
+  logo        String?
+  textConfig  Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  events      Event[]
+}
+
+model Event {
+  id            String         @id @default(cuid())
+  name          String
+  slug          String         @unique
+  eventCode     String         @unique
+  date          DateTime
+  location      String?
+  logo          String?
+  description   String?
+  coverImage    String?
+  primaryColor  String?
+  secondaryColor String?
+  templateId    String?
+  photoLimit    Int            @default(1)
+  allowVideo    Boolean        @default(true)
+  videoDuration Int            @default(30)
+  allowVoiceNote Boolean       @default(true)
+  voiceNoteDuration Int        @default(60)
+  allowMessage  Boolean        @default(false)
+  allowPublicGallery Boolean    @default(true)
+  saveOriginal  Boolean        @default(false)
+  active        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  template      Template?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  guestSessions GuestSession[]
+  photos        Photo[]
+  videos        Video[]
+  voiceNotes    VoiceNote[]
+  messages      Message[]
+
+  @@index([active])
+  @@index([date])
+}
+
+model GuestSession {
+  id         String        @id @default(cuid())
+  eventId    String
+  deviceInfo String?
+  ipAddress  String?
+  status     SessionStatus @default(ACTIVE)
+  createdAt  DateTime      @default(now())
+  event      Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  photos     Photo[]
+  videos     Video[]
+  voiceNotes VoiceNote[]
+  messages   Message[]
+
+  @@index([eventId, createdAt])
+}
+
+model Photo {
+  id          String       @id @default(cuid())
+  eventId     String
+  sessionId   String
+  originalUrl String?
+  finalUrl    String
+  createdAt   DateTime     @default(now())
+  event       Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  session     GuestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+}
+
+model Video {
+  id         String       @id @default(cuid())
+  eventId   String
+  sessionId  String
+  url        String
+  mimeType   String
+  size       Int
+  durationMs Int?
+  createdAt  DateTime     @default(now())
+  event      Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  session    GuestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+}
+
+model VoiceNote {
+  id         String       @id @default(cuid())
+  eventId    String
+  sessionId  String
+  url        String
+  mimeType   String
+  size       Int
+  durationMs Int?
+  createdAt  DateTime     @default(now())
+  event      Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  session    GuestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  eventId   String
+  sessionId String?
+  name      String?
+  content   String
+  createdAt DateTime @default(now())
+  event     Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  session   GuestSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([eventId, createdAt])
+  @@index([sessionId])
+}
